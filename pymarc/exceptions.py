@@ -6,6 +6,8 @@
 
 """Exceptions for pymarc."""
 
+from typing import NamedTuple, Optional
+
 
 class PymarcException(Exception):
     """Base pymarc Exception."""
@@ -118,3 +120,65 @@ class MissingLinkedFields(PymarcException):
 
     def __str__(self):
         return f"{self.field.tag} field includes a subfield 6 but no linked fields could be found."
+
+
+class LinkageProblem(NamedTuple):
+    """A single subfield 6 linkage problem found in a record.
+
+    `label` identifies the record (e.g. a file name or "source"/"target"),
+    `position` is the field's index in the record's field list (None when the
+    field is not tied to a record, e.g. raised from Field directly), `tag` is
+    the field's tag and `message` describes what is wrong.
+    """
+
+    label: str
+    position: Optional[int]
+    tag: str
+    message: str
+
+
+class InvalidLinkage(PymarcException):
+    """Error when subfield 6 linkage in a record is broken or ambiguous.
+
+    Carries a list of LinkageProblem named tuples in `problems` so a human
+    can locate the offending record and fields.
+    """
+
+    def __init__(self, problems):
+        """Initialize InvalidLinkage with a list of LinkageProblem."""
+        super().__init__(problems)
+        self.problems = tuple(problems)
+
+    def __str__(self):
+        lines = ["Invalid subfield 6 linkage:"]
+        for p in self.problems:
+            where = p.label or "<record>"
+            if p.position is not None:
+                where += f" field #{p.position}"
+            lines.append(f"  {where} {p.tag}: {p.message}")
+        return "\n".join(lines)
+
+
+class MigrationConflict(PymarcException):
+    """Error when a migration plan no longer matches the records at apply time.
+
+    Raised before the target record is touched. `conflicts` is a tuple of
+    human readable descriptions of what changed since the plan was previewed.
+    """
+
+    def __init__(self, conflicts):
+        """Initialize MigrationConflict with a list of conflict descriptions."""
+        super().__init__(conflicts)
+        self.conflicts = tuple(conflicts)
+
+    def __str__(self):
+        lines = ["Migration plan conflicts with the current records:"]
+        lines.extend(f"  {c}" for c in self.conflicts)
+        return "\n".join(lines)
+
+
+class LinkageNumbersExhausted(PymarcException):
+    """Error when no free linkage occurrence number (01-99) remains for a plan."""
+
+    def __str__(self):
+        return "No free linkage occurrence number (01-99) available for the plan"

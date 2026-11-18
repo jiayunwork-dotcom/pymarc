@@ -9,6 +9,7 @@
 from .record import *
 from .field import *
 from .exceptions import *
+from .linkage import *
 from .reader import *
 from .writer import *
 from .constants import *

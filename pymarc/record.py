@@ -36,6 +36,7 @@ from pymarc.field import (
     map_marc8_field,
 )
 from pymarc.leader import Leader
+from pymarc.linkage import LinkageIndex
 from pymarc.marc8 import marc8_to_unicode
 
 isbn_regex: Pattern = re.compile(r"([0-9\-xX]+)")
@@ -275,8 +276,22 @@ class Record:
 
         return [f for f in self.fields if f.tag in args]
 
-    def get_linked_fields(self, field: Field) -> list[Field]:
-        """Given a field that is not an 880, retrieve a list of any linked 880 fields."""
+    def get_linked_fields(self, field: Field, strict: bool = False) -> list[Field]:
+        """Given a field that is not an 880, retrieve a list of any linked 880 fields.
+
+        With ``strict=True`` the whole record's subfield 6 linkage is
+        validated first (raising
+        :class:`InvalidLinkage <pymarc.exceptions.InvalidLinkage>` on any
+        problem) and the linked 880 fields of the field's linkage group are
+        returned. This gives the same grouping that
+        :class:`pymarc.linkage.LinkageIndex`, migration plans and the
+        ``strict_linkage=True`` writers use.
+        """
+        if strict:
+            unit = self.linkage_index().unit_for_field(field)
+            if unit is None:
+                return []
+            return [f for f in unit.alternates if f is not field]
         num = field.linkage_occurrence_num()
         fields = self.get_fields("880")
         linked_fields = list(
@@ -285,6 +300,15 @@ class Record:
         if num is not None and not linked_fields:
             raise MissingLinkedFields(field)
         return linked_fields
+
+    def linkage_index(self, label: str = "record") -> LinkageIndex:
+        """Validate and index this record's subfield 6 linkage groups.
+
+        Raises :class:`InvalidLinkage <pymarc.exceptions.InvalidLinkage>`
+        listing every problem found, with the record's `label` and the field
+        positions. See :class:`pymarc.linkage.LinkageIndex` for the model.
+        """
+        return LinkageIndex(self, label=label)
 
     def decode_marc(
         self,

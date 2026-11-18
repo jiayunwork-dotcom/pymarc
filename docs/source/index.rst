@@ -228,6 +228,14 @@ Field
     :undoc-members:
     :show-inheritance:
 
+Linkage
+-------
+
+.. automodule:: pymarc.linkage
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 Exceptions
 ~~~~~~~~~~
 

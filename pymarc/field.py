@@ -7,11 +7,13 @@
 """The pymarc field file."""
 
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from typing import NamedTuple, Optional
 
 from pymarc.constants import END_OF_FIELD, SUBFIELD_INDICATOR
+from pymarc.exceptions import InvalidLinkage, LinkageProblem
 from pymarc.marc8 import marc8_to_unicode
 
 logger = logging.getLogger("pymarc")
@@ -27,6 +29,38 @@ class Indicators(NamedTuple):
 
     first: str
     second: str
+
+
+class Linkage(NamedTuple):
+    """The parsed parts of a subfield 6 linkage value.
+
+    `tag` is the linked field's tag, `number` the two digit occurrence
+    number and `suffix` everything after the number (e.g. a script
+    identification code like "/(2/r" or "/$1"), or an empty string.
+    """
+
+    tag: str
+    number: str
+    suffix: str
+
+
+#: Strict shape of a subfield 6 value: TAG-NN with an optional "/..." suffix.
+LINKAGE_RE = re.compile(r"^([0-9A-Za-z]{3})-([0-9]{2})(/.*)?$")
+
+
+def parse_linkage(value: str) -> Linkage:
+    """Parse a subfield 6 value into a Linkage named tuple.
+
+    Raises ValueError if the value does not have the exact TAG-NN[/suffix]
+    shape. This is the single parsing routine used by Field.linkage(),
+    pymarc.linkage.LinkageIndex and the strict writers, so they all read a
+    subfield 6 the same way.
+    """
+    match = LINKAGE_RE.match(value or "")
+    if not match:
+        raise ValueError(f"malformed subfield 6 value {value!r}")
+    tag, number, suffix = match.groups()
+    return Linkage(tag=tag, number=number, suffix=suffix or "")
 
 
 class Field:
@@ -380,6 +414,38 @@ class Field:
         """Return the 'occurrence number' part of subfield 6, or None if not present."""
         ocn = self.get("6", "")
         return ocn.split("-")[1].split("/")[0] if ocn else None
+
+    def linkage(self, strict: bool = False) -> Optional[Linkage]:
+        """Return the field's subfield 6 parsed as a Linkage, or None if absent.
+
+        In the default lenient mode the first subfield 6 is parsed on a best
+        effort basis and None is returned when it cannot be parsed. With
+        ``strict=True`` the field must carry exactly one well formed subfield 6
+        (TAG-NN with an optional "/..." suffix); otherwise
+        :class:`InvalidLinkage <pymarc.exceptions.InvalidLinkage>` is raised.
+        A field without any subfield 6 returns None in both modes.
+        """
+        if self.control_field:
+            return None
+        sixes = [s.value for s in self.subfields if s.code == "6"]
+        if not sixes:
+            return None
+        if strict:
+            problems = []
+            if len(sixes) > 1:
+                problems.append(
+                    LinkageProblem("", None, self.tag, "duplicate subfield 6")
+                )
+            else:
+                try:
+                    return parse_linkage(sixes[0])
+                except ValueError as err:
+                    problems.append(LinkageProblem("", None, self.tag, str(err)))
+            raise InvalidLinkage(problems)
+        try:
+            return parse_linkage(sixes[0])
+        except ValueError:
+            return None
 
     def as_marc(self, encoding: str) -> bytes:
         """Used during conversion of a field to raw marc."""

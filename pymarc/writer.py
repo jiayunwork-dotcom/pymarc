@@ -12,6 +12,7 @@ from typing import IO
 
 import pymarc
 from pymarc import Record, WriteNeedsRecord
+from pymarc.linkage import LinkageIndex
 
 
 class Writer:
@@ -113,15 +114,24 @@ class MARCWriter(Writer):
         writer = MARCWriter(memory)
         writer.write(record)
         writer.close(close_fh=False)
+
+    With ``strict_linkage=True`` each record's subfield 6 linkage is
+    validated (see :class:`pymarc.linkage.LinkageIndex`) before anything is
+    written; a record with invalid linkage raises
+    :class:`InvalidLinkage <pymarc.exceptions.InvalidLinkage>`, no part of it
+    is written, and the writer stays usable for the next record.
     """
 
-    def __init__(self, file_handle: IO) -> None:
+    def __init__(self, file_handle: IO, strict_linkage: bool = False) -> None:
         """You need to pass in a byte file like object."""
         super().__init__(file_handle)
+        self.strict_linkage = strict_linkage
 
     def write(self, record: Record) -> None:
         """Writes a record."""
         Writer.write(self, record)
+        if self.strict_linkage:
+            LinkageIndex(record, label="record")
         self.file_handle.write(record.as_marc())
 
 
@@ -192,17 +202,26 @@ class XMLWriter(Writer):
         writer = XMLWriter(memory)
         writer.write(record)
         writer.close(close_fh=False)  # Important!
+
+    With ``strict_linkage=True`` each record's subfield 6 linkage is
+    validated (see :class:`pymarc.linkage.LinkageIndex`) before anything is
+    written; a record with invalid linkage raises
+    :class:`InvalidLinkage <pymarc.exceptions.InvalidLinkage>`, no part of it
+    is written, and the writer stays usable for the next record.
     """
 
-    def __init__(self, file_handle: IO) -> None:
+    def __init__(self, file_handle: IO, strict_linkage: bool = False) -> None:
         """You need to pass in a binary file like object."""
         super().__init__(file_handle)
+        self.strict_linkage = strict_linkage
         self.file_handle.write(b'<?xml version="1.0" encoding="UTF-8"?>')
         self.file_handle.write(b'<collection xmlns="http://www.loc.gov/MARC21/slim">')
 
     def write(self, record: Record) -> None:
         """Writes a record."""
         Writer.write(self, record)
+        if self.strict_linkage:
+            LinkageIndex(record, label="record")
         node = pymarc.record_to_xml_node(record)
         self.file_handle.write(ET.tostring(node, encoding="utf-8"))
 
