@@ -14,17 +14,12 @@ import warnings
 from re import Pattern
 from typing import Any, Optional
 
-from pymarc.constants import DIRECTORY_ENTRY_LEN, END_OF_RECORD, LEADER_LEN
+from pymarc.constants import END_OF_RECORD, LEADER_LEN
 from pymarc.exceptions import (
     BadSubfieldCodeWarning,
-    BaseAddressInvalid,
-    BaseAddressNotFound,
     FieldNotFound,
     MissingLinkedFields,
     NoFieldsFound,
-    RecordDirectoryInvalid,
-    RecordLeaderInvalid,
-    TruncatedRecord,
 )
 from pymarc.field import (
     END_OF_FIELD,
@@ -35,6 +30,7 @@ from pymarc.field import (
     Subfield,
     map_marc8_field,
 )
+from pymarc.frame import DirectoryEntry, validate_frame
 from pymarc.leader import Leader
 from pymarc.linkage import LinkageIndex
 from pymarc.marc8 import marc8_to_unicode
@@ -324,50 +320,25 @@ class Record:
         The Record constructor actually uses decode_marc() behind the scenes when you
         pass in a chunk of MARC data to it.
         """
-        # extract record leader
-        leader = marc[0:LEADER_LEN].decode("ascii")
-
-        if len(leader) != LEADER_LEN:
-            raise RecordLeaderInvalid
+        # validate the frame (leader, base address, directory and every byte
+        # range the directory addresses) before slicing any field data. this
+        # is the same check the reader uses while recovering a corrupted
+        # stream, so direct construction and batch reading reject the same
+        # out-of-bounds frames.
+        validated = validate_frame(marc)
+        leader = validated.leader
+        base_address = validated.base_address
 
         if leader[9] == "a" or self.force_utf8:
             encoding = "utf-8"
 
         self.leader = Leader(leader)
 
-        # extract the byte offset where the record data starts
-        base_address = int(marc[12:17])
-        if base_address <= 0:
-            raise BaseAddressNotFound
-        if base_address >= len(marc):
-            raise BaseAddressInvalid
-        if len(marc) < int(self.leader[:5]):
-            raise TruncatedRecord
-
-        # extract directory, base_address-1 is used since the
-        # director ends with an END_OF_FIELD byte
-        directory = marc[LEADER_LEN : base_address - 1].decode("ascii")
-
-        # determine the number of fields in record
-        if len(directory) % DIRECTORY_ENTRY_LEN != 0:
-            raise RecordDirectoryInvalid
-        field_total: int = len(directory) // DIRECTORY_ENTRY_LEN
-
-        # add fields to our record using directory offsets
-        field_count: int = 0
-        while field_count < field_total:
-            entry_start = field_count * DIRECTORY_ENTRY_LEN
-            entry_end = entry_start + DIRECTORY_ENTRY_LEN
-            entry = directory[entry_start:entry_end]
-            entry_tag = entry[0:3]
-            entry_length = int(entry[3:7])
-            entry_offset = int(entry[7:12])
-            entry_data = marc[
-                base_address + entry_offset : base_address
-                + entry_offset
-                + entry_length
-                - 1
-            ]
+        # add fields to our record using the validated directory entries
+        entry: DirectoryEntry
+        for entry in validated.entries:
+            entry_tag = entry.tag
+            entry_data = marc[entry.field_start : entry.field_end - 1]
             # assume controlfields are numeric; replicates ruby-marc behavior
             if entry_tag < "010" and entry_tag.isdigit():
                 if to_unicode:
@@ -438,9 +409,8 @@ class Record:
                         subfields=subfields,
                     )
             self.add_field(field)
-            field_count += 1
 
-        if field_count == 0:
+        if not self.fields:
             raise NoFieldsFound
 
     def as_marc(self) -> bytes:
