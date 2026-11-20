@@ -8,7 +8,7 @@
 
 import json
 import xml.etree.ElementTree as ET
-from typing import IO
+from typing import IO, Optional
 
 import pymarc
 from pymarc import Record, WriteNeedsRecord
@@ -120,19 +120,52 @@ class MARCWriter(Writer):
     written; a record with invalid linkage raises
     :class:`InvalidLinkage <pymarc.exceptions.InvalidLinkage>`, no part of it
     is written, and the writer stays usable for the next record.
+
+    Pass ``encoding="marc-8"`` to write MARC-8 field data (leader position 9
+    a blank) instead of the default UTF-8/leader-driven output. The record is
+    fully serialized in memory before its first byte is written, so a record
+    that cannot be encoded as MARC-8 raises
+    :class:`MARC8EncodingError <pymarc.exceptions.MARC8EncodingError>` (or
+    :class:`RecordTooLargeError <pymarc.exceptions.RecordTooLargeError>`)
+    with nothing written for that record; records already written stay, and
+    the writer can be used for the next record. Both options may be combined.
     """
 
-    def __init__(self, file_handle: IO, strict_linkage: bool = False) -> None:
-        """You need to pass in a byte file like object."""
+    def __init__(
+        self,
+        file_handle: IO,
+        strict_linkage: bool = False,
+        encoding: Optional[str] = None,
+    ) -> None:
+        """You need to pass in a byte file like object.
+
+        `encoding` may be None (the default UTF-8/leader-driven behaviour) or
+        ``"marc-8"``.
+        """
         super().__init__(file_handle)
+        if encoding is not None and encoding.lower() != "marc-8":
+            raise ValueError(
+                f"unsupported MARCWriter encoding {encoding!r}; use 'marc-8' "
+                "or leave it unset"
+            )
         self.strict_linkage = strict_linkage
+        self.encoding = "marc-8" if encoding is not None else None
 
     def write(self, record: Record) -> None:
-        """Writes a record."""
+        """Writes a record.
+
+        The record is serialized before anything is written, so on an
+        encoding or record format error the file receives none of that
+        record's bytes and the writer remains usable.
+        """
         Writer.write(self, record)
         if self.strict_linkage:
             LinkageIndex(record, label="record")
-        self.file_handle.write(record.as_marc())
+        if self.encoding == "marc-8":
+            data = record.as_marc(encoding="marc-8")
+        else:
+            data = record.as_marc()
+        self.file_handle.write(data)
 
 
 class TextWriter(Writer):

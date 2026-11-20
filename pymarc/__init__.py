@@ -13,6 +13,6 @@ from .linkage import *
 from .reader import *
 from .writer import *
 from .constants import *
-from .marc8 import marc8_to_unicode, MARC8ToUnicode
+from .marc8 import marc8_to_unicode, unicode_to_marc8, MARC8ToUnicode, UnicodeToMARC8
 from .marcxml import *
 from .marcjson import *

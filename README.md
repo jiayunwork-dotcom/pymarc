@@ -142,6 +142,35 @@ legacy_fields: list[str] = ['a', 'The pragmatic programmer : ',
 coded_fields: list[Subfield] = Field.convert_legacy_subfields(legacy_fields)
 ```
 
+### Writing MARC-8
+
+Records are kept as Unicode in pymarc and are written as UTF-8 by default.
+Some exchange partners still require MARC-8; ask for it explicitly:
+
+```python
+# a single record
+data = record.as_marc(encoding='marc-8')
+
+# a batch
+from pymarc import MARCWriter
+with open('file.dat', 'wb') as out:
+    writer = MARCWriter(out, encoding='marc-8')
+    for record in records:
+        writer.write(record)
+    writer.close()
+```
+
+Leader position 9 is written as a blank in this mode and the record object
+is not modified. Extended Latin, Cyrillic, Greek, Hebrew, Arabic, EACC and
+the super/subscript sets are supported; canonically equivalent NFC and NFD
+text produces the same bytes. A character with no mapping, a combining mark
+without a base, a `RawField`, or a MARC control character (ESC, 0x1D, 0x1E,
+0x1F) in field data raises `MARC8EncodingError` with the tag, its occurrence,
+the subfield position and the offset in the original string. `MARCWriter`
+serializes a whole record before writing, so a rejected record leaves the
+file untouched and the writer usable for the next record.
+`strict_linkage=True` can be combined with `encoding='marc-8'`.
+
 ## Updating
 
 Updating works the same way, you read it in, modify it, and then write it out

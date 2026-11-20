@@ -20,10 +20,12 @@ from pymarc.exceptions import (
     BaseAddressInvalid,
     BaseAddressNotFound,
     FieldNotFound,
+    MARC8EncodingError,
     MissingLinkedFields,
     NoFieldsFound,
     RecordDirectoryInvalid,
     RecordLeaderInvalid,
+    RecordTooLargeError,
     TruncatedRecord,
 )
 from pymarc.field import (
@@ -443,54 +445,133 @@ class Record:
         if field_count == 0:
             raise NoFieldsFound
 
-    def as_marc(self) -> bytes:
-        """Returns the record serialized as MARC21."""
-        fields = b""
-        directory = b""
+    def as_marc(self, encoding: Optional[str] = None) -> bytes:
+        """Returns the record serialized as MARC21.
+
+        By default the leader's character coding scheme (position 9) decides
+        between UTF-8 and a single byte encoding, exactly as before. Pass
+        ``encoding="marc-8"`` to serialize the field data as MARC-8 instead
+        (and set leader position 9 to a blank); see
+        :meth:`MARC8Encoder <pymarc.marc8.UnicodeToMARC8>` for the supported
+        character sets and :class:`MARC8EncodingError
+        <pymarc.exceptions.MARC8EncodingError>` for characters that cannot
+        be represented.
+
+        Directory entries (field length in four decimal digits, offset in
+        five) and the leader (record length and base address in five) are
+        computed from the actual bytes of each field. A record whose numbers
+        do not fit raises :class:`RecordTooLargeError
+        <pymarc.exceptions.RecordTooLargeError>` instead of producing a
+        corrupt directory.
+        """
+        marc8 = encoding is not None and encoding.lower() == "marc-8"
+        if encoding is not None and not marc8:
+            raise ValueError(
+                f"unsupported as_marc encoding {encoding!r}; use 'marc-8' "
+                "or leave it unset to follow the leader"
+            )
+
+        fields_parts: list[bytes] = []
+        directory_parts: list[bytes] = []
         offset = 0
+        seen_tags: dict[str, int] = {}
 
-        if self.to_unicode:
-            if isinstance(self.leader, Leader):
-                self.leader.coding_scheme = "a"
-            else:
-                self.leader = self.leader[0:9] + "a" + self.leader[10:]
+        if marc8:
+            field_encoding = "marc-8"
+        else:
+            if self.to_unicode:
+                if isinstance(self.leader, Leader):
+                    self.leader.coding_scheme = "a"
+                else:
+                    self.leader = self.leader[0:9] + "a" + self.leader[10:]
+            field_encoding = (
+                "utf-8" if self.leader[9] == "a" or self.force_utf8 else "iso8859-1"
+            )
 
-        # build the directory
-        # each element of the directory includes the tag, the byte length of
-        # the field and the offset from the base address where the field data
-        # can be found
-        encoding = "utf-8" if self.leader[9] == "a" or self.force_utf8 else "iso8859-1"
-
-        for field in self.fields:
-            if isinstance(field, RawField):
+        for position, field in enumerate(self.fields):
+            occurrence = seen_tags.get(field.tag, 0) + 1
+            seen_tags[field.tag] = occurrence
+            if marc8:
+                if isinstance(field, RawField):
+                    raise MARC8EncodingError(
+                        "RawField cannot be written as MARC-8",
+                        tag=field.tag,
+                        tag_occurrence=occurrence,
+                        field_index=position,
+                    )
+                try:
+                    field_data = field.as_marc(encoding="marc-8")
+                except MARC8EncodingError as err:
+                    if err.tag is None:
+                        err.tag = field.tag
+                        err.tag_occurrence = occurrence
+                        err.field_index = position
+                    raise
+            elif isinstance(field, RawField):
                 field_data = field.as_marc()
             else:
-                field_data = field.as_marc(encoding=encoding)
-            fields += field_data
+                field_data = field.as_marc(encoding=field_encoding)
+
+            if len(field_data) > 9999:
+                raise RecordTooLargeError(
+                    f"field {field.tag} (occurrence {occurrence}) is "
+                    f"{len(field_data)} bytes; the directory field length "
+                    "portion holds at most 9999"
+                )
+            if offset > 99999:
+                raise RecordTooLargeError(
+                    f"field {field.tag} (occurrence {occurrence}) starts at "
+                    f"byte offset {offset}; the directory offset portion "
+                    "holds at most 99999"
+                )
+
+            fields_parts.append(field_data)
             if field.tag.isdigit():
-                directory += f"{int(field.tag):03d}".encode(encoding)
+                directory_parts.append(f"{int(field.tag):03d}".encode("ascii"))
             else:
-                directory += f"{field.tag:>03}".encode(encoding)
-            directory += f"{len(field_data):04d}{offset:05d}".encode(encoding)
+                directory_parts.append(f"{field.tag:>03}".encode("ascii"))
+            directory_parts.append(f"{len(field_data):04d}{offset:05d}".encode("ascii"))
 
             offset += len(field_data)
 
+        fields = b"".join(fields_parts)
+        directory = b"".join(directory_parts)
+
         # directory ends with an end of field
-        directory += END_OF_FIELD.encode(encoding)
+        directory += END_OF_FIELD.encode("ascii")
 
         # field data ends with an end of record
-        fields += END_OF_RECORD.encode(encoding)
+        fields += END_OF_RECORD.encode("ascii")
 
         # the base address where the directory ends and the field data begins
         base_address = LEADER_LEN + len(directory)
 
         # figure out the length of the record
         record_length = base_address + len(fields)
+        if base_address > 99999:
+            raise RecordTooLargeError(
+                f"base address {base_address} exceeds the five digit leader "
+                "portion"
+            )
+        if record_length > 99999:
+            raise RecordTooLargeError(
+                f"record length {record_length} exceeds the five digit leader "
+                "portion"
+            )
 
         # update the leader with the current record length and base address
-        # the lengths are fixed width and zero padded
-        strleader = f"{record_length:0>5}{self.leader[5:12]}{base_address:0>5}{self.leader[17:]}"
-        leader = strleader.encode(encoding)
+        # the lengths are fixed width and zero padded. In MARC-8 mode the
+        # coding scheme byte is a blank; the caller's leader is not modified.
+        if marc8:
+            leader_text = str(self.leader)
+            leader_text = leader_text[0:9] + " " + leader_text[10:]
+        else:
+            leader_text = str(self.leader)
+        strleader = (
+            f"{record_length:0>5}{leader_text[5:12]}"
+            f"{base_address:0>5}{leader_text[17:]}"
+        )
+        leader = strleader.encode("ascii")
 
         return leader + directory + fields
 

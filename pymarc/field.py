@@ -13,8 +13,8 @@ from collections.abc import Iterator, Sequence
 from typing import NamedTuple, Optional
 
 from pymarc.constants import END_OF_FIELD, SUBFIELD_INDICATOR
-from pymarc.exceptions import InvalidLinkage, LinkageProblem
-from pymarc.marc8 import marc8_to_unicode
+from pymarc.exceptions import InvalidLinkage, LinkageProblem, MARC8EncodingError
+from pymarc.marc8 import UnicodeToMARC8, marc8_to_unicode
 
 logger = logging.getLogger("pymarc")
 
@@ -447,8 +447,22 @@ class Field:
         except ValueError:
             return None
 
-    def as_marc(self, encoding: str) -> bytes:
-        """Used during conversion of a field to raw marc."""
+    def as_marc(self, encoding: Optional[str] = "utf-8") -> bytes:
+        """Used during conversion of a field to raw marc.
+
+        `encoding` is either a Python codec name (such as ``"utf-8"`` or
+        ``"iso8859-1"``) or the string ``"marc-8"`` to produce MARC-8 field
+        data. In MARC-8 mode the field is emitted as a self contained byte
+        string: it starts with the default G0/G1 designations assumed by the
+        reader and restores them at the end, so no escape state leaks into
+        the next field. A character that cannot be represented raises
+        :class:`MARC8EncodingError <pymarc.exceptions.MARC8EncodingError>`.
+        """
+        if encoding is None:
+            encoding = "utf-8"
+        if encoding.lower() == "marc-8":
+            return self._as_marc8()
+
         if self.control_field:
             return f"{self.data}{END_OF_FIELD}".encode(encoding)
 
@@ -461,6 +475,46 @@ class Field:
                 encoding
             )
         )
+
+    def _as_marc8(self) -> bytes:
+        """Serialize the field as MARC-8 bytes."""
+        if self.control_field:
+            # MARC 21 control fields are ASCII only; reject anything else
+            # rather than silently producing non-MARC-8 bytes.
+            data = self.data or ""
+            for offset, char in enumerate(data):
+                if ord(char) < 0x20 or ord(char) > 0x7E:
+                    raise MARC8EncodingError(
+                        "control field data must be printable ASCII",
+                        char_offset=offset,
+                        character=char,
+                    )
+            return f"{data}{END_OF_FIELD}".encode("ascii")
+
+        def ascii_byte(char: str, what: str) -> bytes:
+            if len(char) != 1 or ord(char) < 0x20 or ord(char) > 0x7E:
+                raise MARC8EncodingError(
+                    f"{what} must be printable ASCII", character=char
+                )
+            return char.encode("ascii")
+
+        encoder = UnicodeToMARC8()
+        out = bytearray()
+        out += ascii_byte(self.indicator1, "indicator")
+        out += ascii_byte(self.indicator2, "indicator")
+        for index, subfield in enumerate(self.subfields):
+            out += SUBFIELD_INDICATOR.encode("ascii")
+            out += ascii_byte(subfield.code, "subfield code")
+            try:
+                out += encoder.encode(subfield.value)
+            except MARC8EncodingError as err:
+                # Fill in the subfield location; Record adds the field
+                # location when it serializes the whole record.
+                err.subfield_index = index
+                err.subfield_code = subfield.code
+                raise
+        out += END_OF_FIELD.encode("ascii")
+        return bytes(out)
 
     # alias for backwards compatibility
     as_marc21 = as_marc
@@ -542,6 +596,11 @@ class RawField(Field):
     def as_marc(self, encoding: Optional[str] = None):
         """Used during conversion of a field to raw MARC."""
         if encoding is not None:
+            if encoding.lower() == "marc-8":
+                raise MARC8EncodingError(
+                    "RawField cannot be written as MARC-8; its bytes are "
+                    "passed through uninterpreted"
+                )
             logger.warning("Attempt to force a RawField into encoding %s", encoding)
         if self.control_field:
             return self.data + END_OF_FIELD.encode("ascii")  # type: ignore

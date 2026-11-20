@@ -179,6 +179,39 @@ it out again:
     with open('file.dat', 'wb') as out:
        out.write(record.as_marc())
 
+Writing MARC-8
+~~~~~~~~~~~~~~
+
+Records are handled internally as Unicode, but some exchange partners still
+require MARC-8. Pass ``encoding="marc-8"`` to choose it explicitly; without
+the option, serialization follows the leader as before (UTF-8 when leader
+position 9 is ``a``).
+
+.. code-block:: python
+
+    data = record.as_marc(encoding="marc-8")
+
+    with open('file.dat', 'wb') as out:
+        writer = MARCWriter(out, encoding="marc-8")
+        for record in records:
+            writer.write(record)
+        writer.close()
+
+    # strict subfield 6 validation can be combined with MARC-8 output
+    writer = MARCWriter(out, encoding="marc-8", strict_linkage=True)
+
+With the explicit option, leader position 9 is written as a blank, and the
+record's own leader, fields and subfields are not modified. The supported
+character sets are the ones in :mod:`pymarc.marc8_mapping` (Extended Latin,
+Cyrillic, Greek, Hebrew, Arabic, EACC and the super/subscript sets). Text
+that is canonically equivalent (NFC or NFD) produces the same bytes, and
+combining marks are written before their base character. A character with no
+mapping, a combining mark with no base, a ``RawField``, or the MARC control
+characters ESC/0x1D/0x1E/0x1F inside field data raises
+:class:`MARC8EncodingError <pymarc.exceptions.MARC8EncodingError>` with the
+tag, tag occurrence, subfield position and the offset in the original
+string. See ``examples/write_marc8.py`` for a worked example.
+
 JSON, XML and Text
 ~~~~~~~~~~~~~~~~~~
 
